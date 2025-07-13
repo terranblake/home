@@ -47,35 +47,118 @@
 #include <esp_sleep.h>
 #include <esp_wifi.h>
 
-/************* USER SETTINGS *****************/
-const char* NODE_ID = "bedroom_01";      // Unique identifier for this sensor
-const int SENSOR_PIN = 4;                // GPIO4 for thermistor (ADC1_CH4)
-const int NTC_POWER_PIN = 5;             // GPIO5 to control thermistor power (optional)
-const int BATTERY_PIN = 3;               // GPIO3 for battery voltage monitoring (ADC1_CH3)
+/************* CONFIGURATION FROM PLATFORMIO.INI *****************/
+// All settings are now configured in platformio.ini and passed as build flags
+// Override these in specific environments as needed
 
-// Sleep intervals (minutes) - automatically adjusted by safe mode
-int normal_sleep_minutes = 15;           // Normal operation: 15 minutes = ~42 days battery
-int safe_sleep_minutes = 60;             // Safe mode: 1 hour = ~300+ days battery
-int current_sleep_minutes = 15;          // Current active interval
+// Node Configuration
+#ifndef NODE_ID
+#define NODE_ID "sensor_01"
+#endif
 
-// Safe mode thresholds
-const float BATTERY_SAFE_THRESHOLD = 2.4;  // Enter safe mode below this voltage
-const float BATTERY_NORMAL_THRESHOLD = 2.6; // Exit safe mode above this voltage
-const int MAX_FAILED_TRANSMISSIONS = 3;     // Enter safe mode after this many failures
+#ifndef NODE_LOCATION  
+#define NODE_LOCATION "unknown"
+#endif
 
-// Receiver MAC address (you'll need to get this from the receiver)
-uint8_t receiverMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Broadcast initially
+#ifndef NODE_TYPE
+#define NODE_TYPE "temperature"
+#endif
 
-// Mesh capability (can act as relay for other nodes)
-bool mesh_relay_enabled = true;          // Allow relaying packets from other nodes
-const int MESH_RELAY_LIMIT = 3;          // Max relayed packets per wake cycle
-/*********************************************/
+// Hardware Pin Configuration
+#ifndef SENSOR_PIN
+#define SENSOR_PIN 4
+#endif
 
-// Thermistor constants for NTCLE100E3103JB0
-constexpr float R_FIXED = 10000.0;   // 10kΩ fixed resistor
-constexpr float BETA = 3977.0;       // β25/85 = 3977K
-constexpr float T0_TEMP = 298.15;    // 25°C in Kelvin
-constexpr float R0 = 10000.0;        // 10kΩ @25°C
+#ifndef BATTERY_PIN
+#define BATTERY_PIN 3
+#endif
+
+#ifndef NTC_POWER_PIN
+#define NTC_POWER_PIN 5
+#endif
+
+#ifndef STATUS_LED_PIN
+#define STATUS_LED_PIN 2
+#endif
+
+// Timing Configuration (convert minutes to use at runtime)
+#ifndef NORMAL_SLEEP_MINUTES
+#define NORMAL_SLEEP_MINUTES 15
+#endif
+
+#ifndef SAFE_SLEEP_MINUTES
+#define SAFE_SLEEP_MINUTES 60
+#endif
+
+#ifndef EMERGENCY_SLEEP_MINUTES
+#define EMERGENCY_SLEEP_MINUTES 240
+#endif
+
+// Power Management Thresholds
+#ifndef BATTERY_SAFE_THRESHOLD
+#define BATTERY_SAFE_THRESHOLD 2.4
+#endif
+
+#ifndef BATTERY_NORMAL_THRESHOLD
+#define BATTERY_NORMAL_THRESHOLD 2.6
+#endif
+
+#ifndef BATTERY_CRITICAL_THRESHOLD
+#define BATTERY_CRITICAL_THRESHOLD 2.2
+#endif
+
+#ifndef MAX_FAILED_TRANSMISSIONS
+#define MAX_FAILED_TRANSMISSIONS 3
+#endif
+
+// Mesh Configuration
+#ifndef MESH_RELAY_LIMIT
+#define MESH_RELAY_LIMIT 3
+#endif
+
+#ifndef SAFE_MODE_AUTH
+#define SAFE_MODE_AUTH 0xDEADBEEF
+#endif
+
+// Sensor Configuration
+#ifndef R_FIXED
+#define R_FIXED 10000.0
+#endif
+
+#ifndef BETA
+#define BETA 3977.0
+#endif
+
+#ifndef T0_TEMP
+#define T0_TEMP 298.15
+#endif
+
+#ifndef R0
+#define R0 10000.0
+#endif
+
+// Runtime variables
+const char* node_id = NODE_ID;
+const char* node_location = NODE_LOCATION;
+const char* node_type = NODE_TYPE;
+int normal_sleep_minutes = NORMAL_SLEEP_MINUTES;
+int safe_sleep_minutes = SAFE_SLEEP_MINUTES;
+int emergency_sleep_minutes = EMERGENCY_SLEEP_MINUTES;
+int current_sleep_minutes = NORMAL_SLEEP_MINUTES;
+bool mesh_relay_enabled = MESH_RELAY_ENABLED;
+
+// Receiver MAC address from build flags
+uint8_t receiverMAC[] = {
+    RECEIVER_MAC_0, RECEIVER_MAC_1, RECEIVER_MAC_2,
+    RECEIVER_MAC_3, RECEIVER_MAC_4, RECEIVER_MAC_5
+};
+
+// Thermistor constants
+constexpr float r_fixed = R_FIXED;
+constexpr float beta = BETA;
+constexpr float t0_temp = T0_TEMP;
+constexpr float r0 = R0;
+/*********************************************************************/
 
 // Data structure for ESP-NOW transmission
 typedef struct {
@@ -108,7 +191,7 @@ RTC_DATA_ATTR uint32_t safe_mode_start = 0;  // When safe mode started
 RTC_DATA_ATTR uint32_t safe_mode_duration = 0; // How long to stay in safe mode
 
 sensor_data_t sensor_data;
-const uint32_t SAFE_MODE_AUTH = 0xDEADBEEF;  // Simple auth code
+const uint32_t safe_mode_auth = SAFE_MODE_AUTH;
 
 float readBatteryVoltage() {
   // Read battery voltage with voltage divider (if installed)
@@ -116,7 +199,7 @@ float readBatteryVoltage() {
   // With divider: 2x 100kΩ, reads up to 6V (but max is 3.2V from CR2450)
   int raw = analogRead(BATTERY_PIN);
   
-  #ifdef BATTERY_VOLTAGE_DIVIDER
+  #ifdef USE_BATTERY_VOLTAGE_DIVIDER
   return (raw * 6.0) / 4095.0;  // With voltage divider
   #else
   return (raw * 3.3) / 4095.0;  // Direct connection
@@ -146,7 +229,7 @@ void checkAndUpdatePowerMode() {
   }
   
   // Emergency mode for critically low battery
-  if (battery_v < 2.2) {
+  if (battery_v < BATTERY_CRITICAL_THRESHOLD) {
     power_mode = 2; // Emergency mode
     Serial.printf("EMERGENCY: Battery critical (%.3fV)\n", battery_v);
   }
@@ -167,7 +250,7 @@ void checkAndUpdatePowerMode() {
       current_sleep_minutes = safe_sleep_minutes;
       break;
     case 2: // Emergency
-      current_sleep_minutes = safe_sleep_minutes * 4; // 4 hours
+      current_sleep_minutes = emergency_sleep_minutes;
       break;
   }
   
@@ -178,7 +261,7 @@ void checkAndUpdatePowerMode() {
 
 float readThermistorC() {
   // Power on the thermistor circuit
-  #ifdef NTC_POWER_PIN
+  #ifdef USE_POWER_GATING
   digitalWrite(NTC_POWER_PIN, HIGH);
   delay(10);  // Allow settling time
   #endif
@@ -192,7 +275,7 @@ float readThermistorC() {
   Serial.printf("Voltage: %.3f V (Battery: %.3f V)\n", v, battery_v);
   
   // Power off the thermistor circuit to save power
-  #ifdef NTC_POWER_PIN
+  #ifdef USE_POWER_GATING
   digitalWrite(NTC_POWER_PIN, LOW);
   #endif
   
@@ -201,10 +284,10 @@ float readThermistorC() {
     return -999.0;
   }
   
-  float rT = (v * R_FIXED) / (battery_v - v);  // Voltage divider math
+  float rT = (v * r_fixed) / (battery_v - v);  // Voltage divider math
   Serial.printf("Thermistor resistance: %.1f Ω\n", rT);
   
-  float tempK = 1.0 / ((1.0 / T0_TEMP) + (1.0 / BETA) * log(rT / R0));
+  float tempK = 1.0 / ((1.0 / t0_temp) + (1.0 / beta) * log(rT / r0));
   return tempK - 273.15;  // Convert to Celsius
 }
 
@@ -226,13 +309,13 @@ void onDataReceived(const uint8_t* mac, const uint8_t* data, int len) {
     memcpy(&cmd, data, sizeof(cmd));
     
     // Verify authentication
-    if (cmd.auth_code != SAFE_MODE_AUTH) {
+    if (cmd.auth_code != safe_mode_auth) {
       Serial.println("Invalid safe mode command - auth failed");
       return;
     }
     
     // Check if command is for this node or broadcast
-    if (strcmp(cmd.target_node, NODE_ID) == 0 || strcmp(cmd.target_node, "*") == 0) {
+    if (strcmp(cmd.target_node, node_id) == 0 || strcmp(cmd.target_node, "*") == 0) {
       Serial.printf("Safe mode command received: mode=%d, duration=%d min\n", 
                     cmd.command, cmd.duration_minutes);
       
@@ -257,7 +340,7 @@ void onDataReceived(const uint8_t* mac, const uint8_t* data, int len) {
     memcpy(&relay_data, data, sizeof(relay_data));
     
     // Don't relay our own data or in emergency mode
-    if (strcmp(relay_data.node_id, NODE_ID) != 0 && power_mode < 2) {
+    if (strcmp(relay_data.node_id, node_id) != 0 && power_mode < 2) {
       Serial.printf("Relaying data from node: %s\n", relay_data.node_id);
       esp_now_send(receiverMAC, data, len);
     }
@@ -306,7 +389,7 @@ void sendSensorData() {
   float battery_v = readBatteryVoltage();
   
   // Prepare data packet
-  strncpy(sensor_data.node_id, NODE_ID, sizeof(sensor_data.node_id) - 1);
+  strncpy(sensor_data.node_id, node_id, sizeof(sensor_data.node_id) - 1);
   sensor_data.temp_c = temp_c;
   sensor_data.temp_f = temp_f;
   sensor_data.battery_v = battery_v;
@@ -369,16 +452,22 @@ void setup() {
   delay(100);
   
   Serial.println("\n=== ESP32-C3 Battery Transmitter ===");
-  Serial.printf("Node ID: %s\n", NODE_ID);
+  Serial.printf("Node ID: %s\n", node_id);
+  Serial.printf("Location: %s\n", node_location);
+  Serial.printf("Type: %s\n", node_type);
   Serial.printf("Sequence: %d\n", sequence_number);
   Serial.printf("CPU Frequency: %d MHz\n", getCpuFrequencyMhz());
   
   // Configure GPIO pins
-  #ifdef NTC_POWER_PIN
+  #ifdef USE_POWER_GATING
   pinMode(NTC_POWER_PIN, OUTPUT);
   digitalWrite(NTC_POWER_PIN, LOW);  // Start with thermistor powered off
-  Serial.println("NTC power control enabled on GPIO5");
+  Serial.printf("NTC power control enabled on GPIO%d\n", NTC_POWER_PIN);
   #endif
+  
+  pinMode(STATUS_LED_PIN, OUTPUT);
+  digitalWrite(STATUS_LED_PIN, LOW);
+  Serial.printf("Status LED configured on GPIO%d\n", STATUS_LED_PIN);
   
   // Check battery voltage
   float battery_v = readBatteryVoltage();

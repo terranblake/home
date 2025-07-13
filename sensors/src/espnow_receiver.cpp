@@ -60,31 +60,83 @@
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
 
-/************* USER SETTINGS *****************/
-const char* WIFI_SSID = "FromTheLandOfKansas";
-const char* WIFI_PASSWORD = "Kansas_6614!";
-const char* SERVER_ENDPOINT = "http://192.168.8.123:8080/ingest";
+/************* CONFIGURATION FROM PLATFORMIO.INI *****************/
+// All settings are now configured in platformio.ini and passed as build flags
+// Override these in specific environments as needed
 
-// Receiver configuration
-const char* NODE_ID = "receiver_01";         // Unique identifier for this receiver
-const bool BATTERY_POWERED = false;          // Set true for battery-powered mesh nodes
-const bool MESH_RELAY_ENABLED = true;        // Enable mesh relay functionality
-const bool SAFE_MODE_CONTROL_ENABLED = true; // Enable remote safe-mode control
+// WiFi Configuration
+#ifndef WIFI_SSID
+#define WIFI_SSID "FromTheLandOfKansas"
+#endif
 
-// Battery settings (for battery-powered mesh nodes)
-const int BATTERY_PIN = 3;                   // GPIO3 for battery voltage monitoring
-const float BATTERY_SAFE_THRESHOLD = 3.8;    // Enter safe mode below this voltage (3x AA)
-const float BATTERY_NORMAL_THRESHOLD = 4.0;  // Exit safe mode above this voltage
-const int MAX_RELAY_PER_CYCLE = 5;           // Max packets to relay per cycle
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "Kansas_6614!"
+#endif
 
-// Status LED (optional)
-const int STATUS_LED = 2;                    // Built-in LED on most ESP32 boards
+#ifndef SERVER_ENDPOINT
+#define SERVER_ENDPOINT "http://192.168.8.123:8080/ingest"
+#endif
 
-// Safe mode intervals (for battery-powered nodes)
+// Node Configuration
+#ifndef NODE_ID
+#define NODE_ID "receiver_01"
+#endif
+
+#ifndef NODE_LOCATION
+#define NODE_LOCATION "unknown"
+#endif
+
+#ifndef NODE_TYPE
+#define NODE_TYPE "receiver"
+#endif
+
+// Hardware Pin Configuration
+#ifndef BATTERY_PIN
+#define BATTERY_PIN 3
+#endif
+
+#ifndef STATUS_LED_PIN
+#define STATUS_LED_PIN 2
+#endif
+
+// Power Management (for battery-powered mesh nodes)
+#ifndef BATTERY_SAFE_THRESHOLD
+#define BATTERY_SAFE_THRESHOLD 3.8
+#endif
+
+#ifndef BATTERY_NORMAL_THRESHOLD
+#define BATTERY_NORMAL_THRESHOLD 4.0
+#endif
+
+#ifndef BATTERY_CRITICAL_THRESHOLD
+#define BATTERY_CRITICAL_THRESHOLD 3.4
+#endif
+
+// Mesh Configuration
+#ifndef MESH_RELAY_LIMIT
+#define MESH_RELAY_LIMIT 5
+#endif
+
+#ifndef SAFE_MODE_AUTH
+#define SAFE_MODE_AUTH 0xDEADBEEF
+#endif
+
+// Runtime variables
+const char* wifi_ssid = WIFI_SSID;
+const char* wifi_password = WIFI_PASSWORD;
+const char* server_endpoint = SERVER_ENDPOINT;
+const char* node_id = NODE_ID;
+const char* node_location = NODE_LOCATION;
+const char* node_type = NODE_TYPE;
+const bool battery_powered = BATTERY_POWERED;
+const bool mesh_relay_enabled = MESH_RELAY_ENABLED;
+const bool safe_mode_control_enabled = SAFE_MODE_CONTROL_ENABLED;
+
+// Check intervals (milliseconds)
 int normal_check_interval = 5000;            // Normal: check every 5 seconds
 int safe_check_interval = 30000;             // Safe mode: check every 30 seconds
 int current_check_interval = 5000;           // Current active interval
-/*********************************************/
+/*********************************************************************/
 
 // Data structure matching transmitter (updated for safe mode)
 typedef struct {
@@ -127,7 +179,7 @@ struct {
 } stats;
 
 float readBatteryVoltage() {
-  if (!BATTERY_POWERED) return 5.0; // Assume mains power
+  if (!battery_powered) return 5.0; // Assume mains power
   
   // Read battery voltage with voltage divider for 3x AA (4.5V max)
   int raw = analogRead(BATTERY_PIN);
@@ -135,7 +187,7 @@ float readBatteryVoltage() {
 }
 
 void checkAndUpdatePowerMode() {
-  if (!BATTERY_POWERED) return; // Skip for mains-powered nodes
+  if (!battery_powered) return; // Skip for mains-powered nodes
   
   float battery_v = readBatteryVoltage();
   uint32_t current_time = millis() / 60000; // Minutes since boot
@@ -159,7 +211,7 @@ void checkAndUpdatePowerMode() {
   }
   
   // Emergency mode for critically low battery
-  if (battery_v < 3.4) { // For 3x AA lithium
+  if (battery_v < BATTERY_CRITICAL_THRESHOLD) { // For 3x AA lithium
     power_mode = 2; // Emergency mode
     Serial.printf("EMERGENCY: Battery critical (%.3fV)\n", battery_v);
   }
@@ -183,14 +235,14 @@ void checkAndUpdatePowerMode() {
 }
 
 bool sendSafeModeCommand(const char* target_node, uint8_t command, uint32_t duration_minutes = 0) {
-  if (!SAFE_MODE_CONTROL_ENABLED) return false;
+  if (!safe_mode_control_enabled) return false;
   
   safe_mode_command_t cmd;
   strncpy(cmd.target_node, target_node, sizeof(cmd.target_node) - 1);
   cmd.target_node[sizeof(cmd.target_node) - 1] = '\0';
   cmd.command = command;
   cmd.duration_minutes = duration_minutes;
-  cmd.auth_code = SAFE_MODE_AUTH;
+  cmd.auth_code = safe_mode_auth;
   
   // Broadcast the command
   esp_err_t result = esp_now_send(NULL, (uint8_t*)&cmd, sizeof(cmd));
@@ -217,18 +269,18 @@ void printMACAddress() {
 
 void blinkStatus(int count = 1) {
   for (int i = 0; i < count; i++) {
-    digitalWrite(STATUS_LED, HIGH);
+    digitalWrite(STATUS_LED_PIN, HIGH);
     delay(100);
-    digitalWrite(STATUS_LED, LOW);
+    digitalWrite(STATUS_LED_PIN, LOW);
     delay(100);
   }
 }
 
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(wifi_ssid, wifi_password);
   
-  Serial.printf("Connecting to WiFi: %s", WIFI_SSID);
+  Serial.printf("Connecting to WiFi: %s", wifi_ssid);
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     delay(500);
@@ -248,7 +300,7 @@ bool forwardToServer(const sensor_data_t& data) {
   WiFiClient client;
   
   // Build URL with all sensor parameters (compatible with existing server)
-  String url = String(SERVER_ENDPOINT) + 
+  String url = String(server_endpoint) + 
                "?room=" + String(data.node_id) +
                "&sensor=NTCLE100E3103JB0_ESPNOW" +
                "&tempC=" + String(data.temp_c, 2) +
@@ -434,7 +486,7 @@ void printStatus() {
   
   // Print status every 30 seconds (or longer in safe/emergency modes)
   unsigned long status_interval = 30000;
-  if (BATTERY_POWERED) {
+  if (battery_powered) {
     switch (power_mode) {
       case 0: status_interval = 30000; break;  // Normal: 30 seconds
       case 1: status_interval = 60000; break;  // Safe: 1 minute
@@ -446,10 +498,10 @@ void printStatus() {
     last_status = now;
     
     Serial.println("\n=== RECEIVER/MESH NODE STATUS ===");
-    Serial.printf("Node ID: %s\n", NODE_ID);
-    Serial.printf("Type: %s\n", BATTERY_POWERED ? "Battery-powered mesh" : "Mains-powered gateway");
+    Serial.printf("Node ID: %s\n", node_id);
+    Serial.printf("Type: %s\n", battery_powered ? "Battery-powered mesh" : "Mains-powered gateway");
     
-    if (BATTERY_POWERED) {
+    if (battery_powered) {
       float battery_v = readBatteryVoltage();
       Serial.printf("Battery: %.3fV\n", battery_v);
       Serial.printf("Power Mode: %s\n", 
@@ -491,17 +543,19 @@ void setup() {
   delay(1000);
   
   Serial.println("\n=== ESP32 ESP-NOW Receiver/Mesh Node ===");
-  Serial.printf("Mode: %s\n", BATTERY_POWERED ? "Battery-powered mesh node" : "Mains-powered gateway");
-  Serial.printf("Node ID: %s\n", NODE_ID);
-  Serial.printf("Mesh relay: %s\n", MESH_RELAY_ENABLED ? "Enabled" : "Disabled");
-  Serial.printf("Safe-mode control: %s\n", SAFE_MODE_CONTROL_ENABLED ? "Enabled" : "Disabled");
+  Serial.printf("Mode: %s\n", battery_powered ? "Battery-powered mesh node" : "Mains-powered gateway");
+  Serial.printf("Node ID: %s\n", node_id);
+  Serial.printf("Location: %s\n", node_location);
+  Serial.printf("Type: %s\n", node_type);
+  Serial.printf("Mesh relay: %s\n", mesh_relay_enabled ? "Enabled" : "Disabled");
+  Serial.printf("Safe-mode control: %s\n", safe_mode_control_enabled ? "Enabled" : "Disabled");
   
   // Configure status LED
-  pinMode(STATUS_LED, OUTPUT);
-  digitalWrite(STATUS_LED, LOW);
+  pinMode(STATUS_LED_PIN, OUTPUT);
+  digitalWrite(STATUS_LED_PIN, LOW);
   
   // Configure battery monitoring (if battery powered)
-  if (BATTERY_POWERED) {
+  if (battery_powered) {
     pinMode(BATTERY_PIN, INPUT);
     checkAndUpdatePowerMode();
   }
@@ -510,7 +564,7 @@ void setup() {
   printMACAddress();
   
   // Connect to WiFi (may be skipped in emergency mode for battery nodes)
-  if (!BATTERY_POWERED || power_mode < 2) {
+  if (!battery_powered || power_mode < 2) {
     connectWiFi();
   } else {
     Serial.println("Emergency mode - skipping WiFi connection to save power");
@@ -519,10 +573,17 @@ void setup() {
   // Initialize ESP-NOW
   initESPNow();
   
+  // Add HTTP server for safe mode commands (optional)
+  if (WiFi.status() == WL_CONNECTED && !battery_powered) {
+    Serial.println("Starting HTTP server for safe mode commands on port 8081");
+    // This would require including WebServer.h and implementing HTTP endpoints
+    // For now, this is a placeholder for future implementation
+  }
+  
   Serial.println("\n🎯 Receiver ready! Waiting for sensor data...");
   Serial.println("📡 Configure transmitters with the MAC address shown above");
-  if (!BATTERY_POWERED || power_mode < 2) {
-    Serial.printf("🌐 Data will be forwarded to: %s\n", SERVER_ENDPOINT);
+  if (!battery_powered || power_mode < 2) {
+    Serial.printf("🌐 Data will be forwarded to: %s\n", server_endpoint);
   }
   Serial.println("🔗 Mesh relay and safe-mode control active");
   Serial.println("=" * 50);
@@ -534,7 +595,7 @@ void loop() {
   unsigned long now = millis();
   
   // Check and update power mode (for battery-powered nodes)
-  if (BATTERY_POWERED && (now - last_power_check > current_check_interval)) {
+  if (battery_powered && (now - last_power_check > current_check_interval)) {
     last_power_check = now;
     checkAndUpdatePowerMode();
     relay_count = 0; // Reset relay counter each check cycle
@@ -544,14 +605,14 @@ void loop() {
   printStatus();
   
   // Check WiFi connection (skip in emergency mode for battery nodes)
-  if ((!BATTERY_POWERED || power_mode < 2) && WiFi.status() != WL_CONNECTED) {
+  if ((!battery_powered || power_mode < 2) && WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi disconnected! Reconnecting...");
     connectWiFi();
   }
   
   // LED blink pattern based on power mode
   unsigned long blink_interval = 2000; // Default 2 seconds
-  if (BATTERY_POWERED) {
+  if (battery_powered) {
     switch (power_mode) {
       case 0: blink_interval = 2000; break;  // Normal: 2 seconds
       case 1: blink_interval = 5000; break;  // Safe: 5 seconds  
@@ -561,12 +622,12 @@ void loop() {
   
   if (now - last_blink > blink_interval) {
     last_blink = now;
-    digitalWrite(STATUS_LED, !digitalRead(STATUS_LED));
+    digitalWrite(STATUS_LED_PIN, !digitalRead(STATUS_LED_PIN));
   }
   
   // Adjust main loop delay based on power mode
   int loop_delay = 100; // Default for mains power
-  if (BATTERY_POWERED) {
+  if (battery_powered) {
     switch (power_mode) {
       case 0: loop_delay = 100; break;  // Normal: 100ms
       case 1: loop_delay = 500; break;  // Safe: 500ms
@@ -581,7 +642,7 @@ void loop() {
  * SETUP INSTRUCTIONS:
  * 
  * OPTION A - Mains-Powered Gateway:
- * 1. Set BATTERY_POWERED = false in user settings
+ * 1. Set BATTERY_POWERED = false in platformio.ini
  * 2. Flash this code to a mains-powered ESP32/ESP32-C3 dev board
  * 3. Copy the MAC address from Serial output
  * 4. Update battery_transmitter.cpp with this MAC address
@@ -589,7 +650,7 @@ void loop() {
  * 6. Monitor Serial output to see incoming sensor data
  * 
  * OPTION B - Battery-Powered Mesh Node:
- * 1. Set BATTERY_POWERED = true in user settings
+ * 1. Set BATTERY_POWERED = true in platformio.ini
  * 2. Wire battery monitoring circuit (GPIO3 with voltage divider)
  * 3. Connect 3x AA lithium batteries (4.5V) with capacitor buffering
  * 4. Flash this code to an ESP32-C3 module

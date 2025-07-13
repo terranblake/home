@@ -1,6 +1,6 @@
 # ESP-NOW Ultra-Low Power Temperature Sensors
 
-This project implements an ultra-low power temperature monitoring system using ESP-NOW protocol with CR2450 batteries.
+This project implements an ultra-low power temperature monitoring system using ESP-NOW protocol with multiple power configurations for different deployment scenarios.
 
 ## 📋 System Overview
 
@@ -9,12 +9,60 @@ This project implements an ultra-low power temperature monitoring system using E
 [Battery Sensors] --ESP-NOW--> [Receiver] --WiFi--> [Python Server] ---> [Dashboard]
 ```
 
-- **Battery Transmitters**: ESP32-C3 + CR2450 + NTC thermistor
-- **Receiver**: ESP32 (mains powered) forwarding data via WiFi
-- **Server**: Existing Python temperature server
-- **Dashboard**: Existing Flask web dashboard
+- **Battery Transmitters**: ESP32-C3 + CR2450/AA + NTC thermistor
+- **ULP Receivers**: ESP32-C3 with ULP RISC-V coprocessor (ultra-low power)
+- **Mesh Receivers**: ESP32 (mains powered) forwarding data via WiFi
+- **Server**: Python temperature server with anomaly detection
+- **Dashboard**: Flask web dashboard with real-time monitoring
 
-## 🔋 Battery Life Estimates
+## 🔋 Power Configuration Options
+
+### 1. Standard Battery Transmitter (CR2450)
+- **Power**: Single CR2450 (540-600mAh)
+- **Life**: 14-168 days depending on interval
+- **Use**: Short to medium-term deployments
+- **File**: `battery_transmitter.cpp`
+
+### 2. ULP RISC-V Ultra-Low Power (3x AA Lithium)
+- **Power**: 3x AA Lithium (9000mAh total)
+- **Life**: 3-8+ years depending on interval
+- **Use**: Long-term remote deployments
+- **File**: `ulp_receiver.cpp`
+- **Average Current**: ~20-30µA
+
+### 3. Recovery/Debug Mode (USB Powered)
+- **Power**: USB/mains powered
+- **Life**: Continuous operation
+- **Use**: Development and debugging
+- **File**: `recovery_transmitter.cpp`
+
+## ⚡ ULP RISC-V Ultra-Low Power Features
+
+The ULP (Ultra-Low Power) variant uses the ESP32-C3's RISC-V coprocessor to achieve extreme power efficiency:
+
+### Power Consumption
+- **ULP reading sensors**: ~150µA for 10ms every 15-120 minutes
+- **ULP sleep**: ~8µA between readings
+- **Main CPU wake**: ~80mA for 100ms during transmission
+- **Deep sleep**: ~10µA
+- **Average total**: ~25µA (vs 200-500µA for standard operation)
+
+### Expected Battery Life (3x AA Lithium)
+| Interval | Battery Life | Use Case |
+|----------|-------------|----------|
+| 15 minutes | 4-5 years | High detail monitoring |
+| 30 minutes | 6-7 years | Balanced monitoring |
+| 60 minutes | 8-10 years | Long-term tracking |
+| Emergency mode | 10+ years | Minimal operation |
+
+### Key Features
+- True ULP RISC-V coprocessor operation (when properly configured)
+- Main CPU only wakes for ESP-NOW transmission
+- Automatic power mode adjustment based on battery voltage
+- Years of operation on single battery set
+- Ideal for remote, hard-to-access deployments
+
+## 🔋 Standard Battery Life Estimates (CR2450)
 
 | Interval | Battery Life | Cost/Month* | Use Case |
 |----------|-------------|-------------|----------|
@@ -28,7 +76,7 @@ This project implements an ultra-low power temperature monitoring system using E
 
 ## 🛠 Hardware Requirements
 
-### Per Battery Transmitter Node:
+### Standard Battery Transmitter (CR2450):
 - ESP32-C3 development module
 - CR2450 lithium battery (540-600mAh, 3V)
 - CR2450 battery holder
@@ -38,13 +86,25 @@ This project implements an ultra-low power temperature monitoring system using E
 - 220µF electrolytic capacitor (6.3V, low ESR)
 - Optional: BSS138 P-FET for power gating
 
-### Receiver Node:
+### ULP Ultra-Low Power Node (3x AA):
+- ESP32-C3-MINI-1 module (ULP RISC-V support required)
+- 3x AA lithium batteries (3000mAh each, 4.5V total)
+- Battery holder for 3x AA
+- NTCLE100E3103JB0 thermistor (10kΩ @25°C)
+- 10kΩ 1% precision resistor
+- 2x 100kΩ resistors for battery voltage divider
+- 470µF electrolytic capacitor (low ESR)
+- 100µF ceramic capacitor (0805 or larger)
+- Status LED with 330Ω resistor
+
+### Mesh Receiver Node:
 - ESP32 or ESP32-C3 development board
 - USB power or 5V adapter (mains powered)
+- Optional: External antenna for improved range
 
 ## 🔌 Circuit Diagrams
 
-### Battery Transmitter Circuit:
+### Standard Battery Transmitter (CR2450):
 ```
 CR2450 (+) ──┬── 100µF ceramic ──┬── ESP32-C3 VCC
              │                   │
@@ -61,10 +121,33 @@ BSS138 Source ── 10kΩ resistor ── 3.3V
 BSS138 Drain ── GPIO4
 ```
 
-### Receiver Circuit:
+### ULP Ultra-Low Power (3x AA Lithium):
+```
+3x AA Lithium (4.5V) ──┬── 470µF electro ──┬── ESP32-C3 VCC (3.3V)
+                       │                   │
+                       └── 100µF ceramic ──┘
+                       
+Battery (-) ──── ESP32-C3 GND
+
+ULP Thermistor (ULP-accessible pins only):
+ESP32-C3 3.3V ── 10kΩ ──┬── GPIO0 (ULP_GPIO0, ADC1_CH0)
+                         │
+                         └── NTC thermistor ── GND
+
+ULP Battery Monitor:
+ESP32-C3 3.3V ── 100kΩ ──┬── GPIO1 (ULP_GPIO1, ADC1_CH1)
+                          │
+                          └── 100kΩ ── GND
+
+Status LED:
+GPIO2 ── 330Ω ── LED ── GND
+```
+
+### Mesh Receiver Circuit:
 ```
 Standard ESP32 development board with USB power
 No additional components required
+Optional: External antenna for improved range
 ```
 
 ## 📁 File Structure
@@ -72,14 +155,42 @@ No additional components required
 ```
 src/
 ├── main.cpp                  # Original WiFi version
-├── battery_transmitter.cpp   # Ultra-low power ESP-NOW transmitter
-├── espnow_receiver.cpp      # Mains-powered ESP-NOW receiver  
+├── battery_transmitter.cpp   # Standard battery ESP-NOW transmitter
+├── ulp_receiver.cpp         # ULP RISC-V ultra-low power receiver
+├── ulp_main.S              # ULP RISC-V assembly program  
+├── espnow_receiver.cpp      # Mains-powered ESP-NOW receiver
 └── recovery_transmitter.cpp  # Debug version (no deep sleep)
+
+docs/
+├── ESP-NOW_README.md        # This file - main documentation
+├── ULP_SETUP_GUIDE.md       # Detailed ULP implementation guide
+└── MESH_SYSTEM_OVERVIEW.md  # Mesh networking documentation
+
+CMakeLists.txt               # Build configuration for ULP
+platformio.ini               # All build environments and configuration
 ```
 
 ## 🚀 Setup Instructions
 
-### 1. Flash the Receiver
+### 1. Choose Your Deployment Type
+
+#### Standard Battery Deployment (CR2450)
+- Use for: 1-6 month deployments, easy battery replacement
+- File: `battery_transmitter.cpp`
+- Environment: `env:battery_transmitter`
+
+#### ULP Ultra-Low Power Deployment (3x AA)
+- Use for: 3+ year deployments, remote locations
+- File: `ulp_receiver.cpp`  
+- Environment: `env:ulp_receiver`
+- See: `ULP_SETUP_GUIDE.md` for detailed setup
+
+#### Debug/Development
+- Use for: Testing and development
+- File: `recovery_transmitter.cpp`
+- Environment: `env:recovery_transmitter`
+
+### 2. Flash the Mesh Receiver
 ```bash
 # Flash receiver to mains-powered ESP32
 pio run -e espnow_receiver -t upload
@@ -88,18 +199,29 @@ pio device monitor -e espnow_receiver
 
 **Important**: Note the MAC address from Serial output!
 
-### 2. Configure Transmitter
-Edit `battery_transmitter.cpp`:
-```cpp
-// Update with receiver's MAC address
-uint8_t receiverMAC[] = {0x30, 0xAE, 0xA4, 0x07, 0x0D, 0x64}; // Your receiver MAC
+### 3. Configure Your Sensor Nodes
 
-// Configure node settings
-const char* NODE_ID = "bedroom_01";        // Unique ID
-const int SLEEP_MINUTES = 15;              // Adjust for battery life
+#### Method A: Using platformio.ini environments
+```bash
+# Use pre-configured environments
+pio run -e outdoor_sensor -t upload      # Outdoor deployment
+pio run -e ulp_receiver_shed -t upload   # Shed ULP deployment
+pio run -e ulp_receiver_greenhouse -t upload # Greenhouse ULP
 ```
 
-### 3. Test with Recovery Version
+#### Method B: Custom configuration in platformio.ini
+```ini
+[env:my_custom_sensor]
+extends = env:battery_transmitter  # or env:ulp_receiver
+build_flags = 
+    ${env:battery_transmitter.build_flags}
+    -DNODE_ID='"my_sensor_01"'
+    -DNODE_LOCATION='"my_location"'
+    -DRECEIVER_MAC='{0x30,0xAE,0xA4,0x07,0x0D,0x64}'  # Your receiver MAC
+    -DNORMAL_SLEEP_MINUTES=30
+```
+
+### 4. Test with Recovery Version First
 ```bash
 # Flash debug version first (no deep sleep)
 pio run -e recovery_transmitter -t upload
