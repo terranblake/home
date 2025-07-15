@@ -1,3 +1,4 @@
 **/*.csv
 .pio/
 .DS_Store
+**/*.csv
