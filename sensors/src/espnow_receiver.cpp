@@ -1,5 +1,16 @@
 /********************************************************************
- * ESP32 ESP-NOW Receiver/Mesh Node with Remote Safe-Mode Control
+ * ESP32 ESP-NOW Receiver/Mesh Node with Rem// Mesh Configuration
+#ifndef MESH_RELAY_LIMIT
+#define MESH_RELAY_LIMIT 3
+#endif
+
+#ifndef MAX_RELAY_PER_CYCLE
+#define MAX_RELAY_PER_CYCLE 10
+#endif
+
+#ifndef SAFE_MODE_AUTH
+#define SAFE_MODE_AUTH 0xDEADBEEF
+#endif-Mode Control
  * 
  * CIRCUIT DIAGRAM - Option A (Mains Powered):
  * ┌─────────────────────────────────────────────────────────────┐
@@ -117,6 +128,10 @@
 #define MESH_RELAY_LIMIT 5
 #endif
 
+#ifndef MAX_RELAY_PER_CYCLE
+#define MAX_RELAY_PER_CYCLE 10
+#endif
+
 #ifndef SAFE_MODE_AUTH
 #define SAFE_MODE_AUTH 0xDEADBEEF
 #endif
@@ -165,7 +180,7 @@ typedef struct {
 uint8_t power_mode = 0;                      // 0=normal, 1=safe, 2=emergency
 uint32_t safe_mode_start = 0;                // When safe mode started (battery nodes)
 uint32_t safe_mode_duration = 0;             // How long to stay in safe mode
-const uint32_t SAFE_MODE_AUTH = 0xDEADBEEF;  // Simple auth code
+const uint32_t safe_mode_auth = SAFE_MODE_AUTH;  // Simple auth code
 uint32_t relay_count = 0;                    // Packets relayed this cycle
 
 // Statistics
@@ -586,7 +601,7 @@ void setup() {
     Serial.printf("🌐 Data will be forwarded to: %s\n", server_endpoint);
   }
   Serial.println("🔗 Mesh relay and safe-mode control active");
-  Serial.println("=" * 50);
+  Serial.println("==================================================");
 }
 
 void loop() {

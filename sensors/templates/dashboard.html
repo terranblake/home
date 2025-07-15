@@ -22,13 +22,54 @@
             text-align: center;
         }
         
+        .filters-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 15px;
+            gap: 15px;
+        }
+        
         .temperature-toggle {
             background: rgba(255,255,255,0.2);
             border: 2px solid rgba(255,255,255,0.3);
             border-radius: 25px;
             padding: 5px;
             display: inline-flex;
-            margin-top: 10px;
+        }
+        
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            margin: 0 10px;
+            min-width: 200px;
+        }
+        
+        .filter-group label {
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: rgba(255,255,255,0.9);
+        }
+        
+        .filter-group select {
+            background: rgba(255,255,255,0.2);
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 5px;
+            padding: 8px;
+            color: white;
+            min-height: 36px;
+            max-width: 100%;
+        }
+        
+        .filter-group select option {
+            background-color: #667eea;
+            color: white;
+        }
+        
+        .filter-group select:focus {
+            outline: none;
+            border-color: rgba(255,255,255,0.6);
         }
         
         .temp-option {
@@ -229,9 +270,23 @@
     <div class="header">
         <h1>🌡️ Temperature Monitoring Dashboard</h1>
         <p>Real-time temperature data with historical analysis</p>
-        <div class="temperature-toggle">
-            <button class="temp-option active" onclick="setTemperatureUnit('c')">°C</button>
-            <button class="temp-option" onclick="setTemperatureUnit('f')">°F</button>
+        <div class="filters-container">
+            <div class="temperature-toggle">
+                <button class="temp-option active" onclick="setTemperatureUnit('c')">°C</button>
+                <button class="temp-option" onclick="setTemperatureUnit('f')">°F</button>
+            </div>
+            <div class="filter-group">
+                <label for="sensor-filter">Sensors:</label>
+                <select id="sensor-filter" multiple="multiple">
+                    <option value="">Loading sensors...</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label for="room-filter">Rooms:</label>
+                <select id="room-filter" multiple="multiple">
+                    <option value="">Loading rooms...</option>
+                </select>
+            </div>
         </div>
         <div id="status" class="status offline">Connecting...</div>
     </div>
@@ -339,13 +394,6 @@
         </div>
         
         <div class="control-group">
-            <label for="room-filter">Room:</label>
-            <select id="room-filter">
-                <option value="">All Rooms</option>
-            </select>
-        </div>
-        
-        <div class="control-group">
             <label for="comparison-days">Comparison Days:</label>
             <select id="comparison-days">
                 <option value="3">Last 3 Days</option>
@@ -400,8 +448,104 @@
 
             setupEventListeners() {
                 document.getElementById('time-range').addEventListener('change', () => this.updateRealtimeChart());
-                document.getElementById('room-filter').addEventListener('change', () => this.updateRealtimeChart());
                 document.getElementById('comparison-days').addEventListener('change', () => this.updateHourlyChart());
+                
+                // Add event listeners for our new filters
+                const sensorFilter = document.getElementById('sensor-filter');
+                const roomFilter = document.getElementById('room-filter');
+                
+                // Create a function to update all charts when filters change
+                const updateAllCharts = () => {
+                    console.log("Filter changed - updating all charts");
+                    this.fetchStats();
+                    this.updateRealtimeChart();
+                    this.updateTrendCharts();
+                    this.updateHourlyChart();
+                    this.updateDailyChart();
+                    this.updateInsights();
+                };
+                
+                // Make sure filters immediately update ALL charts
+                sensorFilter.addEventListener('change', updateAllCharts);
+                roomFilter.addEventListener('change', updateAllCharts);
+                
+                // Initialize the filters
+                this.loadFilters();
+            }
+            
+            async loadFilters() {
+                try {
+                    const response = await fetch('/api/filters');
+                    const data = await response.json();
+                    
+                    // Update sensor filter
+                    const sensorFilter = document.getElementById('sensor-filter');
+                    sensorFilter.innerHTML = '';
+                    if (data.sensors && data.sensors.length > 0) {
+                        // Add select all option
+                        const selectAllOption = document.createElement('option');
+                        selectAllOption.value = "all";
+                        selectAllOption.textContent = "All Sensors";
+                        selectAllOption.selected = true;
+                        sensorFilter.appendChild(selectAllOption);
+                        
+                        // Add individual sensors
+                        data.sensors.forEach(sensor => {
+                            const option = document.createElement('option');
+                            option.value = sensor;
+                            option.textContent = sensor;
+                            sensorFilter.appendChild(option);
+                        });
+                    }
+                    
+                    // Update room filter - completely recreate to avoid stale state
+                    const roomFilterParent = document.getElementById('room-filter').parentElement;
+                    const oldRoomFilter = document.getElementById('room-filter');
+                    
+                    // Create new select element
+                    const newRoomFilter = document.createElement('select');
+                    newRoomFilter.id = 'room-filter';
+                    newRoomFilter.multiple = true;
+                    
+                    // Populate new select element
+                    if (data.rooms && data.rooms.length > 0) {
+                        // Add select all option
+                        const selectAllOption = document.createElement('option');
+                        selectAllOption.value = "all";
+                        selectAllOption.textContent = "All Rooms";
+                        selectAllOption.selected = true;
+                        newRoomFilter.appendChild(selectAllOption);
+                        
+                        // Add individual rooms
+                        data.rooms.forEach(room => {
+                            const option = document.createElement('option');
+                            option.value = room;
+                            option.textContent = room;
+                            newRoomFilter.appendChild(option);
+                        });
+                    }
+                    
+                    // Replace old filter with new one
+                    roomFilterParent.replaceChild(newRoomFilter, oldRoomFilter);
+                    
+                    // Re-attach event listener to new room filter using the shared update function
+                    newRoomFilter.addEventListener('change', () => {
+                        console.log("Room filter changed - updating all charts");
+                        this.fetchStats();
+                        this.updateRealtimeChart();
+                        
+                        // Force complete redraw of trend charts by destroying them first
+                        Plotly.purge('trend-1h-chart');
+                        Plotly.purge('trend-4h-chart');
+                        this.updateTrendCharts();
+                        
+                        this.updateHourlyChart();
+                        this.updateDailyChart();
+                        this.updateInsights();
+                    });
+                } catch (error) {
+                    console.error('Error loading filters:', error);
+                }
             }
             
             preserveZoom(chartId) {
@@ -434,7 +578,22 @@
 
             async fetchStats() {
                 try {
-                    const response = await fetch(`/api/stats?unit=${this.currentUnit}`);
+                    const filters = this.getSelectedFilters();
+                    
+                    // Build URL with filters
+                    let url = `/api/stats?unit=${this.currentUnit}`;
+                    
+                    // Add sensor filters
+                    filters.sensors.forEach(sensor => {
+                        url += `&sensors[]=${encodeURIComponent(sensor)}`;
+                    });
+                    
+                    // Add room filters
+                    filters.rooms.forEach(room => {
+                        url += `&room[]=${encodeURIComponent(room)}`;
+                    });
+                    
+                    const response = await fetch(url);
                     const data = await response.json();
                     
                     if (data.error) {
@@ -457,20 +616,8 @@
                         el.textContent = unitSymbol;
                     });
                     
-                    // Update room filter
-                    const roomFilter = document.getElementById('room-filter');
-                    const currentValue = roomFilter.value;
-                    roomFilter.innerHTML = '<option value="">All Rooms</option>';
-                    
-                    if (data.rooms && data.rooms.length > 0) {
-                        data.rooms.forEach(room => {
-                            const option = document.createElement('option');
-                            option.value = room;
-                            option.textContent = room;
-                            if (room === currentValue) option.selected = true;
-                            roomFilter.appendChild(option);
-                        });
-                    }
+                    // We don't need to update room filters here anymore
+                    // as we're handling that in the loadFilters method
                     
                     // Update status
                     const status = document.getElementById('status');
@@ -489,8 +636,20 @@
             async updateRealtimeChart() {
                 try {
                     const hours = document.getElementById('time-range').value;
-                    const room = document.getElementById('room-filter').value;
-                    const url = `/api/realtime?hours=${hours}&unit=${this.currentUnit}${room ? `&room=${room}` : ''}`;
+                    const filters = this.getSelectedFilters();
+                    
+                    // Build URL with filters
+                    let url = `/api/realtime?hours=${hours}&unit=${this.currentUnit}`;
+                    
+                    // Add sensor filters
+                    filters.sensors.forEach(sensor => {
+                        url += `&sensors[]=${encodeURIComponent(sensor)}`;
+                    });
+                    
+                    // Add room filters
+                    filters.rooms.forEach(room => {
+                        url += `&room[]=${encodeURIComponent(room)}`;
+                    });
                     
                     this.preserveZoom('realtime-chart');
                     
@@ -499,26 +658,78 @@
                     
                     const unitSymbol = this.currentUnit === 'f' ? '°F' : '°C';
                     
-                    const trace = {
-                        x: data.timestamps,
-                        y: data.temperatures,
-                        type: 'scatter',
-                        mode: 'lines+markers',
-                        line: { color: '#667eea', width: 2 },
-                        marker: { color: '#667eea', size: 4 },
-                        name: 'Temperature'
-                    };
+                    // Group data by sensor if multiple sensors
+                    const traces = [];
+                    
+                    if (data.timestamps.length === 0) {
+                        // No data case
+                        traces.push({
+                            x: [],
+                            y: [],
+                            type: 'scatter',
+                            mode: 'lines+markers',
+                            line: { color: '#667eea', width: 2 },
+                            marker: { color: '#667eea', size: 4 },
+                            name: 'No data'
+                        });
+                    } else if (data.rooms && data.rooms.length > 0) {
+                        // Group by unique sensor/room combinations
+                        const uniqueCombos = [];
+                        const colors = ['#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#ffcc02', '#ff6b6b', '#6a11cb', '#00c9ff', '#f953c6'];
+                        
+                        for (let i = 0; i < data.timestamps.length; i++) {
+                            const combo = `${data.rooms[i]}:${data.sensors ? data.sensors[i] : 'unknown'}`;
+                            if (!uniqueCombos.includes(combo)) {
+                                uniqueCombos.push(combo);
+                            }
+                        }
+                        
+                        uniqueCombos.forEach((combo, comboIndex) => {
+                            const [room, sensor] = combo.split(':');
+                            const color = colors[comboIndex % colors.length];
+                            
+                            const indices = [];
+                            for (let i = 0; i < data.timestamps.length; i++) {
+                                const currentCombo = `${data.rooms[i]}:${data.sensors ? data.sensors[i] : 'unknown'}`;
+                                if (currentCombo === combo) {
+                                    indices.push(i);
+                                }
+                            }
+                            
+                            traces.push({
+                                x: indices.map(i => data.timestamps[i]),
+                                y: indices.map(i => data.temperatures[i]),
+                                type: 'scatter',
+                                mode: 'lines+markers',
+                                line: { color: color, width: 2 },
+                                marker: { color: color, size: 4 },
+                                name: `${room} - ${sensor}`
+                            });
+                        });
+                    } else {
+                        // Default single trace for all data
+                        traces.push({
+                            x: data.timestamps,
+                            y: data.temperatures,
+                            type: 'scatter',
+                            mode: 'lines+markers',
+                            line: { color: '#667eea', width: 2 },
+                            marker: { color: '#667eea', size: 4 },
+                            name: 'Temperature'
+                        });
+                    }
                     
                     let layout = {
                         xaxis: { title: 'Time' },
                         yaxis: { title: `Temperature (${unitSymbol})` },
                         margin: { t: 30, r: 30, b: 50, l: 50 },
-                        showlegend: false
+                        showlegend: traces.length > 1 // Only show legend if multiple traces
                     };
                     
                     layout = this.restoreZoom('realtime-chart', layout);
                     
-                    Plotly.newPlot('realtime-chart', [trace], layout, { responsive: true });
+                    // Use Plotly.react to avoid flashing
+                    Plotly.react('realtime-chart', traces, layout, { responsive: true });
                 } catch (error) {
                     console.error('Error updating realtime chart:', error);
                 }
@@ -527,14 +738,155 @@
             async updateTrendCharts() {
                 try {
                     const unitSymbol = this.currentUnit === 'f' ? '°F' : '°C';
+                    const filters = this.getSelectedFilters();
                     
-                    // 1 hour trend
-                    const response1h = await fetch(`/api/trend_comparison?hours=1&unit=${this.currentUnit}`);
+                    // Build URL with filters for the trend comparison API (not raw data)
+                    let baseUrl = `/api/trend_comparison?unit=${this.currentUnit}`;
+                    
+                    // Add sensor filters
+                    filters.sensors.forEach(sensor => {
+                        baseUrl += `&sensors[]=${encodeURIComponent(sensor)}`;
+                    });
+                    
+                    // Add room filters
+                    filters.rooms.forEach(room => {
+                        baseUrl += `&room[]=${encodeURIComponent(room)}`;
+                    });
+                    
+                    // Save zoom state before updating
+                    this.preserveZoom('trend-1h-chart');
+                    this.preserveZoom('trend-4h-chart');
+                    
+                    // Fetch 1-hour trend data from trend_comparison API
+                    const response1h = await fetch(`${baseUrl}&hours=1`); 
                     const data1h = await response1h.json();
                     
+                    // Process the trend comparison data
+                    const traces1h = [];
+                    const colors = ['#667eea', '#fa709a', '#4facfe', '#43e97b', '#ffcc02', '#9966cc', '#ff7f50', '#8fbc8f'];
+                    
                     if (data1h.current && data1h.previous) {
-                        const traces1h = [
-                            {
+                        let colorIndex = 0;
+                        
+                        // Check if we have the new grouped data format
+                        if (data1h.current.groups) {
+                            // Process current period data
+                            for (const [key, groupData] of Object.entries(data1h.current.groups)) {
+                                const color = colors[colorIndex % colors.length];
+                                
+                                traces1h.push({
+                                    x: groupData.minutes,
+                                    y: groupData.temperatures,
+                                    type: 'scatter',
+                                    mode: 'lines+markers',
+                                    name: `Current: ${groupData.room} - ${groupData.sensor}`,
+                                    line: { color, width: 2 },
+                                    marker: { size: 3 }
+                                });
+                                
+                                colorIndex++;
+                            }
+                            
+                            // Process previous period data (match colors to current period)
+                            if (data1h.previous.groups) {
+                                colorIndex = 0; // Reset to match current data colors
+                                
+                                for (const [key, groupData] of Object.entries(data1h.previous.groups)) {
+                                    const color = colors[colorIndex % colors.length];
+                                    
+                                    traces1h.push({
+                                        x: groupData.minutes,
+                                        y: groupData.temperatures,
+                                        type: 'scatter',
+                                        mode: 'lines+markers',
+                                        name: `Previous: ${groupData.room} - ${groupData.sensor}`,
+                                        line: { color, width: 2, dash: 'dash' },
+                                        marker: { size: 3 }
+                                    });
+                                    
+                                    colorIndex++;
+                                }
+                            }
+                        }
+                        // Check if we have room and sensor info in flat arrays (backward compatibility)
+                        else if (data1h.current.rooms && data1h.current.rooms.length > 0) {
+                            // Group by unique room/sensor combinations
+                            const currentRoomSensors = {};
+                            
+                            // First, build a mapping of room:sensor to data indices
+                            for (let i = 0; i < data1h.current.minutes.length; i++) {
+                                const room = data1h.current.rooms[i];
+                                const sensor = data1h.current.sensors ? data1h.current.sensors[i] : 'unknown';
+                                const key = `${room}:${sensor}`;
+                                
+                                if (!currentRoomSensors[key]) {
+                                    currentRoomSensors[key] = {
+                                        x: [],
+                                        y: [],
+                                        room,
+                                        sensor
+                                    };
+                                }
+                                
+                                currentRoomSensors[key].x.push(data1h.current.minutes[i]);
+                                currentRoomSensors[key].y.push(data1h.current.temperatures[i]);
+                            }
+                            
+                            // Create a trace for each room:sensor combination
+                            for (const key in currentRoomSensors) {
+                                const rs = currentRoomSensors[key];
+                                traces1h.push({
+                                    x: rs.x,
+                                    y: rs.y,
+                                    type: 'scatter',
+                                    mode: 'lines+markers',
+                                    name: `Current: ${rs.room} - ${rs.sensor}`,
+                                    line: { color: colors[colorIndex % colors.length], width: 2 },
+                                    marker: { size: 3 }
+                                });
+                                colorIndex++;
+                            }
+                            
+                            // Do the same for previous day data
+                            if (data1h.previous.rooms && data1h.previous.rooms.length > 0) {
+                                const previousRoomSensors = {};
+                                colorIndex = 0; // Reset color index to match current data
+                                
+                                for (let i = 0; i < data1h.previous.minutes.length; i++) {
+                                    const room = data1h.previous.rooms[i];
+                                    const sensor = data1h.previous.sensors ? data1h.previous.sensors[i] : 'unknown';
+                                    const key = `${room}:${sensor}`;
+                                    
+                                    if (!previousRoomSensors[key]) {
+                                        previousRoomSensors[key] = {
+                                            x: [],
+                                            y: [],
+                                            room,
+                                            sensor
+                                        };
+                                    }
+                                    
+                                    previousRoomSensors[key].x.push(data1h.previous.minutes[i]);
+                                    previousRoomSensors[key].y.push(data1h.previous.temperatures[i]);
+                                }
+                                
+                                for (const key in previousRoomSensors) {
+                                    const rs = previousRoomSensors[key];
+                                    traces1h.push({
+                                        x: rs.x,
+                                        y: rs.y,
+                                        type: 'scatter',
+                                        mode: 'lines+markers',
+                                        name: `Previous: ${rs.room} - ${rs.sensor}`,
+                                        line: { color: colors[colorIndex % colors.length], width: 2, dash: 'dash' },
+                                        marker: { size: 3 }
+                                    });
+                                    colorIndex++;
+                                }
+                            }
+                        } else {
+                            // Legacy format with no room/sensor data
+                            traces1h.push({
                                 x: data1h.current.minutes,
                                 y: data1h.current.temperatures,
                                 type: 'scatter',
@@ -542,8 +894,9 @@
                                 name: data1h.current.label,
                                 line: { color: '#667eea', width: 2 },
                                 marker: { size: 3 }
-                            },
-                            {
+                            });
+                            
+                            traces1h.push({
                                 x: data1h.previous.minutes,
                                 y: data1h.previous.temperatures,
                                 type: 'scatter',
@@ -551,10 +904,22 @@
                                 name: data1h.previous.label,
                                 line: { color: '#fa709a', width: 2, dash: 'dash' },
                                 marker: { size: 3 }
-                            }
-                        ];
+                            });
+                        }
+                    } else {
+                        // No data case
+                        traces1h.push({
+                            x: [],
+                            y: [],
+                            type: 'scatter',
+                            mode: 'lines+markers',
+                            name: 'No data available',
+                            line: { color: '#667eea', width: 2 },
+                            marker: { size: 3 }
+                        });
+                    }
                         
-                        const layout1h = {
+                        let layout1h = {
                             xaxis: { title: 'Minutes' },
                             yaxis: { title: `Temperature (${unitSymbol})` },
                             margin: { t: 30, r: 30, b: 50, l: 50 },
@@ -562,16 +927,103 @@
                             legend: { x: 0, y: 1, bgcolor: 'rgba(255,255,255,0.8)' }
                         };
                         
-                        Plotly.newPlot('trend-1h-chart', traces1h, layout1h, { responsive: true });
+                        // Restore zoom if available
+                        layout1h = this.restoreZoom('trend-1h-chart', layout1h);
+                        
+                        // Use Plotly.react instead of purge+newPlot to prevent flashing
+                        Plotly.react('trend-1h-chart', traces1h, layout1h, { responsive: true });
                     }
                     
-                    // 4 hour trend
-                    const response4h = await fetch(`/api/trend_comparison?hours=4&unit=${this.currentUnit}`);
+                    // 4 hour trend 
+                    const response4h = await fetch(`${baseUrl}&hours=4`);
                     const data4h = await response4h.json();
                     
                     if (data4h.current && data4h.previous) {
-                        const traces4h = [
-                            {
+                        const traces4h = [];
+                        const colors = ['#667eea', '#fa709a', '#4facfe', '#43e97b', '#ffcc02', '#9966cc', '#ff7f50'];
+                        let colorIndex = 0;
+                        
+                        // Check if we have the new grouped data format
+                        if (data4h.current.groups) {
+                            // Process current period data
+                            for (const [key, groupData] of Object.entries(data4h.current.groups)) {
+                                const color = colors[colorIndex % colors.length];
+                                
+                                traces4h.push({
+                                    x: groupData.minutes,
+                                    y: groupData.temperatures,
+                                    type: 'scatter',
+                                    mode: 'lines+markers',
+                                    name: `Current: ${groupData.room} - ${groupData.sensor}`,
+                                    line: { color, width: 2 },
+                                    marker: { size: 3 }
+                                });
+                                
+                                colorIndex++;
+                            }
+                            
+                            // Process previous period data
+                            if (data4h.previous.groups) {
+                                colorIndex = 0; // Reset to match current data colors
+                                
+                                for (const [key, groupData] of Object.entries(data4h.previous.groups)) {
+                                    const color = colors[colorIndex % colors.length];
+                                    
+                                    traces4h.push({
+                                        x: groupData.minutes,
+                                        y: groupData.temperatures,
+                                        type: 'scatter',
+                                        mode: 'lines+markers',
+                                        name: `Previous: ${groupData.room} - ${groupData.sensor}`,
+                                        line: { color, width: 2, dash: 'dash' },
+                                        marker: { size: 3 }
+                                    });
+                                    
+                                    colorIndex++;
+                                }
+                            }
+                        }
+                        // Backward compatibility mode with room/sensor arrays
+                        else if (data4h.current.rooms && data4h.current.rooms.length > 0) {
+                            // Group by unique room/sensor combinations
+                            const currentRoomSensors = {};
+                            
+                            // First, build a mapping of room:sensor to data indices
+                            for (let i = 0; i < data4h.current.minutes.length; i++) {
+                                const room = data4h.current.rooms[i];
+                                const sensor = data4h.current.sensors ? data4h.current.sensors[i] : 'unknown';
+                                const key = `${room}:${sensor}`;
+                                
+                                if (!currentRoomSensors[key]) {
+                                    currentRoomSensors[key] = {
+                                        x: [],
+                                        y: [],
+                                        room,
+                                        sensor
+                                    };
+                                }
+                                
+                                currentRoomSensors[key].x.push(data4h.current.minutes[i]);
+                                currentRoomSensors[key].y.push(data4h.current.temperatures[i]);
+                            }
+                            
+                            // Create a trace for each room:sensor combination
+                            for (const key in currentRoomSensors) {
+                                const rs = currentRoomSensors[key];
+                                traces4h.push({
+                                    x: rs.x,
+                                    y: rs.y,
+                                    type: 'scatter',
+                                    mode: 'lines+markers',
+                                    name: `Current: ${rs.room} - ${rs.sensor}`,
+                                    line: { color: colors[colorIndex % colors.length], width: 2 },
+                                    marker: { size: 3 }
+                                });
+                                colorIndex++;
+                            }
+                        } else {
+                            // Default behavior if no room data
+                            traces4h.push({
                                 x: data4h.current.minutes,
                                 y: data4h.current.temperatures,
                                 type: 'scatter',
@@ -579,8 +1031,51 @@
                                 name: data4h.current.label,
                                 line: { color: '#667eea', width: 2 },
                                 marker: { size: 3 }
-                            },
-                            {
+                            });
+                        }
+                        
+                        // Handle previous day data
+                        if (data4h.previous.rooms && data4h.previous.rooms.length > 0) {
+                            // Group by unique room/sensor combinations
+                            const prevRoomSensors = {};
+                            
+                            // First, build a mapping of room:sensor to data indices
+                            for (let i = 0; i < data4h.previous.minutes.length; i++) {
+                                const room = data4h.previous.rooms[i];
+                                const sensor = data4h.previous.sensors ? data4h.previous.sensors[i] : 'unknown';
+                                const key = `${room}:${sensor}`;
+                                
+                                if (!prevRoomSensors[key]) {
+                                    prevRoomSensors[key] = {
+                                        x: [],
+                                        y: [],
+                                        room,
+                                        sensor
+                                    };
+                                }
+                                
+                                prevRoomSensors[key].x.push(data4h.previous.minutes[i]);
+                                prevRoomSensors[key].y.push(data4h.previous.temperatures[i]);
+                            }
+                            
+                            // Create a trace for each room:sensor combination with dashed lines for previous day
+                            let colorIndex = 0;
+                            for (const key in prevRoomSensors) {
+                                const rs = prevRoomSensors[key];
+                                traces4h.push({
+                                    x: rs.x,
+                                    y: rs.y,
+                                    type: 'scatter',
+                                    mode: 'lines+markers',
+                                    name: `Previous: ${rs.room} - ${rs.sensor}`,
+                                    line: { color: colors[colorIndex % colors.length], width: 2, dash: 'dash' },
+                                    marker: { size: 3 }
+                                });
+                                colorIndex++;
+                            }
+                        } else {
+                            // Default behavior if no room data for previous
+                            traces4h.push({
                                 x: data4h.previous.minutes,
                                 y: data4h.previous.temperatures,
                                 type: 'scatter',
@@ -588,10 +1083,10 @@
                                 name: data4h.previous.label,
                                 line: { color: '#fa709a', width: 2, dash: 'dash' },
                                 marker: { size: 3 }
-                            }
-                        ];
+                            });
+                        }
                         
-                        const layout4h = {
+                        let layout4h = {
                             xaxis: { title: 'Minutes' },
                             yaxis: { title: `Temperature (${unitSymbol})` },
                             margin: { t: 30, r: 30, b: 50, l: 50 },
@@ -599,7 +1094,11 @@
                             legend: { x: 0, y: 1, bgcolor: 'rgba(255,255,255,0.8)' }
                         };
                         
-                        Plotly.newPlot('trend-4h-chart', traces4h, layout4h, { responsive: true });
+                        // Restore zoom if available
+                        layout4h = this.restoreZoom('trend-4h-chart', layout4h);
+                        
+                        // Use Plotly.react instead of purge+newPlot to prevent flashing
+                        Plotly.react('trend-4h-chart', traces4h, layout4h, { responsive: true });
                     }
                 } catch (error) {
                     console.error('Error updating trend charts:', error);
@@ -608,7 +1107,22 @@
             
             async updateInsights() {
                 try {
-                    const response = await fetch(`/api/insights?unit=${this.currentUnit}`);
+                    const filters = this.getSelectedFilters();
+                    
+                    // Build URL with filters
+                    let url = `/api/insights?unit=${this.currentUnit}`;
+                    
+                    // Add sensor filters
+                    filters.sensors.forEach(sensor => {
+                        url += `&sensors[]=${encodeURIComponent(sensor)}`;
+                    });
+                    
+                    // Add room filters
+                    filters.rooms.forEach(room => {
+                        url += `&room[]=${encodeURIComponent(room)}`;
+                    });
+                    
+                    const response = await fetch(url);
                     const data = await response.json();
                     
                     const unitSymbol = this.currentUnit === 'f' ? '°F' : '°C';
@@ -716,7 +1230,22 @@
             async updateHourlyChart() {
                 try {
                     const days = document.getElementById('comparison-days').value;
-                    const response = await fetch(`/api/hourly_comparison?days=${days}&unit=${this.currentUnit}`);
+                    const filters = this.getSelectedFilters();
+                    
+                    // Build URL with filters
+                    let url = `/api/hourly_comparison?days=${days}&unit=${this.currentUnit}`;
+                    
+                    // Add sensor filters
+                    filters.sensors.forEach(sensor => {
+                        url += `&sensors[]=${encodeURIComponent(sensor)}`;
+                    });
+                    
+                    // Add room filters
+                    filters.rooms.forEach(room => {
+                        url += `&room[]=${encodeURIComponent(room)}`;
+                    });
+                    
+                    const response = await fetch(url);
                     const data = await response.json();
                     
                     const unitSymbol = this.currentUnit === 'f' ? '°F' : '°C';
@@ -724,23 +1253,102 @@
                     this.preserveZoom('hourly-chart');
                     
                     const traces = [];
-                    const colors = ['#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#ffcc02', '#ff6b6b'];
+                    const colors = ['#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#ffcc02', '#ff6b6b', '#9966cc', '#ff7f50'];
                     let colorIndex = 0;
                     
-                    for (const [date, hourlyData] of Object.entries(data)) {
-                        const hours = Array.from({length: 24}, (_, i) => i);
-                        const temps = hours.map(hour => hourlyData[hour] || null);
-                        
-                        traces.push({
-                            x: hours,
-                            y: temps,
-                            type: 'scatter',
-                            mode: 'lines+markers',
-                            name: date,
-                            line: { color: colors[colorIndex % colors.length], width: 2 },
-                            marker: { size: 4 }
-                        });
-                        colorIndex++;
+                    // Check if we're dealing with the new grouped data format
+                    if (data.grouped) {
+                        // New format with room/sensor grouping
+                        for (const [roomSensor, dateData] of Object.entries(data.grouped)) {
+                            const [room, sensor] = roomSensor.split(':');
+                            const color = colors[colorIndex % colors.length];
+                            colorIndex++;
+                            
+                            for (const [date, hourlyData] of Object.entries(dateData)) {
+                                const hours = Array.from({length: 24}, (_, i) => i);
+                                const temperatures = hours.map(hour => hourlyData[hour] !== undefined ? hourlyData[hour] : null);
+                                
+                                // Filter out null values for better line rendering
+                                const validHours = [];
+                                const validTemps = [];
+                                for (let i = 0; i < hours.length; i++) {
+                                    if (temperatures[i] !== null && temperatures[i] !== undefined) {
+                                        validHours.push(hours[i]);
+                                        validTemps.push(temperatures[i]);
+                                    }
+                                }
+                                
+                                traces.push({
+                                    x: validHours,
+                                    y: validTemps,
+                                    type: 'scatter',
+                                    mode: 'lines+markers',
+                                    name: `${date} - ${room} - ${sensor}`,
+                                    line: { color, width: 2 },
+                                    marker: { size: 4 }
+                                });
+                            }
+                        }
+                    } else {
+                        // Legacy format or single room/sensor response
+                        for (const [date, hourlyData] of Object.entries(data)) {
+                            const hours = [];
+                            const temperatures = [];
+                            
+                            for (const [hour, temp] of Object.entries(hourlyData)) {
+                                if (temp !== null) {
+                                    hours.push(parseInt(hour));
+                                    temperatures.push(temp);
+                                }
+                            }
+                            
+                            // Sort by hour for proper line rendering
+                            const sortedIndices = hours.map((_, i) => i)
+                                .sort((a, b) => hours[a] - hours[b]);
+                            
+                            traces.push({
+                                x: sortedIndices.map(i => hours[i]),
+                                y: sortedIndices.map(i => temperatures[i]),
+                                type: 'scatter',
+                                mode: 'lines+markers',
+                                name: date,
+                                line: { color: colors[colorIndex % colors.length], width: 2 },
+                                marker: { size: 4 }
+                            });
+                            
+                            colorIndex++;
+                        }
+                    }
+                                
+                                traces.push({
+                                    x: hours,
+                                    y: cleanHourlyData,
+                                    type: 'scatter',
+                                    mode: 'lines+markers',
+                                    name: `${date} - ${room} - ${sensor}`,
+                                    line: { color: colors[colorIndex % colors.length], width: 2 },
+                                    marker: { size: 4 }
+                                });
+                                colorIndex++;
+                            }
+                        }
+                    } else {
+                        // Fallback to original format if raw data isn't available
+                        for (const [date, hourlyData] of Object.entries(data)) {
+                            const hours = Array.from({length: 24}, (_, i) => i);
+                            const temps = hours.map(hour => hourlyData[hour] || null);
+                            
+                            traces.push({
+                                x: hours,
+                                y: temps,
+                                type: 'scatter',
+                                mode: 'lines+markers',
+                                name: date,
+                                line: { color: colors[colorIndex % colors.length], width: 2 },
+                                marker: { size: 4 }
+                            });
+                            colorIndex++;
+                        }
                     }
                     
                     let layout = {
@@ -753,7 +1361,8 @@
                     
                     layout = this.restoreZoom('hourly-chart', layout);
                     
-                    Plotly.newPlot('hourly-chart', traces, layout, { responsive: true });
+                    // Use Plotly.react to avoid flashing
+                    Plotly.react('hourly-chart', traces, layout, { responsive: true });
                 } catch (error) {
                     console.error('Error updating hourly chart:', error);
                 }
@@ -761,7 +1370,22 @@
 
             async updateDailyChart() {
                 try {
-                    const response = await fetch(`/api/daily_summary?days=30&unit=${this.currentUnit}`);
+                    const filters = this.getSelectedFilters();
+                    
+                    // Build URL with filters
+                    let url = `/api/daily_summary?days=30&unit=${this.currentUnit}`;
+                    
+                    // Add sensor filters
+                    filters.sensors.forEach(sensor => {
+                        url += `&sensors[]=${encodeURIComponent(sensor)}`;
+                    });
+                    
+                    // Add room filters
+                    filters.rooms.forEach(room => {
+                        url += `&room[]=${encodeURIComponent(room)}`;
+                    });
+                    
+                    const response = await fetch(url);
                     const data = await response.json();
                     
                     const unitSymbol = this.currentUnit === 'f' ? '°F' : '°C';
@@ -818,7 +1442,8 @@
                     
                     layout = this.restoreZoom('daily-chart', layout);
                     
-                    Plotly.newPlot('daily-chart', traces, layout, { responsive: true });
+                    // Use Plotly.react to avoid flashing
+                    Plotly.react('daily-chart', traces, layout, { responsive: true });
                 } catch (error) {
                     console.error('Error updating daily chart:', error);
                 }
@@ -834,19 +1459,63 @@
             }
 
             startAutoUpdate() {
-                // Fast updates for real-time data and insights
+                // Fast updates for stats and insights only
                 setInterval(() => {
                     this.fetchStats();
-                    this.updateRealtimeChart();
-                    this.updateTrendCharts();
                     this.updateInsights();
                 }, this.updateInterval);
                 
-                // Slower updates for historical charts
+                // Medium frequency updates for realtime chart
+                setInterval(() => {
+                    this.updateRealtimeChart();
+                }, this.updateInterval * 3); // Every 3 seconds
+                
+                // Less frequent updates for trend charts to reduce flashing
+                setInterval(() => {
+                    this.updateTrendCharts();
+                }, this.updateInterval * 10); // Every 10 seconds
+                
+                // Slowest updates for historical charts
                 setInterval(() => {
                     this.updateHourlyChart();
                     this.updateDailyChart();
-                }, this.updateInterval * 30); // Every 30 seconds
+                }, this.updateInterval * 60); // Every 60 seconds
+            }
+            
+            getSelectedFilters() {
+                const sensorFilter = document.getElementById('sensor-filter');
+                const roomFilter = document.getElementById('room-filter');
+                
+                try {
+                    // Get selected sensors
+                    const selectedSensors = Array.from(sensorFilter.selectedOptions)
+                        .filter(option => option.value !== "all")
+                        .map(option => option.value);
+                    
+                    // Get selected rooms
+                    const selectedRooms = Array.from(roomFilter.selectedOptions)
+                        .filter(option => option.value !== "all")
+                        .map(option => option.value);
+                    
+                    // Check if "All" is selected
+                    const allSensorsSelected = Array.from(sensorFilter.selectedOptions)
+                        .some(option => option.value === "all");
+                    
+                    const allRoomsSelected = Array.from(roomFilter.selectedOptions)
+                        .some(option => option.value === "all");
+                    
+                    const filters = {
+                        sensors: allSensorsSelected ? [] : selectedSensors,
+                        rooms: allRoomsSelected ? [] : selectedRooms
+                    };
+                    
+                    console.log("Applied filters:", filters);
+                    return filters;
+                } catch (error) {
+                    console.error("Error getting filters:", error);
+                    // Return empty arrays as fallback
+                    return { sensors: [], rooms: [] };
+                }
             }
         }
 

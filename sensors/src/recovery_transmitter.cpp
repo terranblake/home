@@ -17,10 +17,21 @@
 #include <esp_wifi.h>
 
 /************* USER SETTINGS *****************/
+#ifndef NODE_ID
 const char* NODE_ID = "debug_01";    // Unique identifier for this sensor
+#endif
+
+#ifndef SENSOR_PIN
 const int SENSOR_PIN = 4;            // GPIO4 for thermistor (ADC1_CH4)
+#endif
+
+#ifndef NTC_POWER_PIN
 const int NTC_POWER_PIN = 5;         // GPIO5 to control thermistor power (optional)
+#endif
+
+#ifndef BATTERY_PIN
 const int BATTERY_PIN = 3;           // GPIO3 for battery voltage monitoring (ADC1_CH3)
+#endif
 
 // Test interval in seconds (much shorter for debugging)
 const int TEST_INTERVAL = 10;        // Send data every 10 seconds
@@ -30,10 +41,21 @@ uint8_t receiverMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Broadcast
 /*********************************************/
 
 // Thermistor constants for NTCLE100E3103JB0
+#ifndef R_FIXED
 constexpr float R_FIXED = 10000.0;   // 10kΩ fixed resistor
+#endif
+
+#ifndef BETA
 constexpr float BETA = 3977.0;       // β25/85 = 3977K
+#endif
+
+#ifndef T0_TEMP
 constexpr float T0_TEMP = 298.15;    // 25°C in Kelvin
+#endif
+
+#ifndef R0
 constexpr float R0 = 10000.0;        // 10kΩ @25°C
+#endif
 
 // Data structure for ESP-NOW transmission
 typedef struct {
@@ -235,7 +257,7 @@ void setup() {
   Serial.println("\n🎯 Debug mode ready!");
   Serial.println("📡 Sending test packets every " + String(TEST_INTERVAL) + " seconds");
   Serial.println("🔄 Use Serial monitor to observe operation");
-  Serial.println("=" * 50);
+  Serial.println("==================================================");
 }
 
 void loop() {

@@ -424,11 +424,11 @@ void sendSensorData() {
 }
 
 void enterDeepSleep() {
-  Serial.printf("Entering deep sleep for %d minutes...\n", SLEEP_MINUTES);
+  Serial.printf("Entering deep sleep for %d minutes...\n", current_sleep_minutes);
   Serial.flush();
   
   // Configure wake-up timer
-  uint64_t sleep_us = SLEEP_MINUTES * 60ULL * 1000000ULL;
+  uint64_t sleep_us = current_sleep_minutes * 60ULL * 1000000ULL;
   esp_sleep_enable_timer_wakeup(sleep_us);
   
   // Shutdown WiFi and ESP-NOW to save power
@@ -438,7 +438,7 @@ void enterDeepSleep() {
   
   // Additional power savings
   esp_wifi_stop();
-  esp_bt_controller_disable();
+  // esp_bt_controller_disable(); // Commented out for ESP32-C3 compatibility
   
   // Enter deep sleep
   esp_deep_sleep_start();

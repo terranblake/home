@@ -34,14 +34,17 @@ class TemperatureDashboard:
         
         try:
             df = pd.read_csv(self.csv_file)
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Let pandas automatically detect the datetime format
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            # Drop any rows where timestamp parsing failed
+            df = df.dropna(subset=['timestamp'])
             df = df.sort_values('timestamp')
             return df
         except Exception as e:
             print(f"Error loading data: {e}")
             return pd.DataFrame()
     
-    def get_data(self, hours_back=24, room_filter=None):
+    def get_data(self, hours_back=24, room_filter=None, sensor_filter=None):
         """Get temperature data for the specified time range"""
         if self.data_cache is None or self.needs_update():
             self.data_cache = self.load_data()
@@ -56,8 +59,18 @@ class TemperatureDashboard:
         df = df[df['timestamp'] >= cutoff_time]
         
         # Filter by room if specified
-        if room_filter and 'room' in df.columns:
-            df = df[df['room'] == room_filter]
+        if room_filter and room_filter != [] and 'room' in df.columns:
+            if isinstance(room_filter, list):
+                df = df[df['room'].isin(room_filter)]
+            else:
+                df = df[df['room'] == room_filter]
+        
+        # Filter by sensor if specified
+        if sensor_filter and sensor_filter != [] and 'sensor' in df.columns:
+            if isinstance(sensor_filter, list):
+                df = df[df['sensor'].isin(sensor_filter)]
+            else:
+                df = df[df['sensor'] == sensor_filter]
         
         return df
     
@@ -76,26 +89,86 @@ class TemperatureDashboard:
         
         return (datetime.now() - self.last_update).seconds > self.update_interval
     
-    def get_hourly_comparison(self, days_back=7):
+    def get_hourly_comparison(self, days_back=7, room_filter=None, sensor_filter=None):
         """Get hourly averages across multiple days for comparison"""
-        df = self.get_data(hours_back=days_back * 24)
+        df = self.get_data(hours_back=days_back * 24, room_filter=room_filter, sensor_filter=sensor_filter)
         if df.empty:
             return {}
         
         df['hour'] = df['timestamp'].dt.hour
         df['date'] = df['timestamp'].dt.date
         
-        hourly_data = {}
+        # Check if we need to group by room and sensor
+        has_room = 'room' in df.columns
+        has_sensor = 'sensor' in df.columns
+        
+        if not has_room and not has_sensor:
+            # Legacy behavior (no grouping)
+            hourly_data = {}
+            for date in df['date'].unique():
+                day_data = df[df['date'] == date]
+                hourly_avg = day_data.groupby('hour')['temp_c'].mean()
+                hourly_data[str(date)] = hourly_avg.to_dict()
+            return hourly_data
+        
+        # Group by room and sensor
+        group_cols = ['date', 'hour']
+        if has_room:
+            group_cols.append('room')
+        if has_sensor:
+            group_cols.append('sensor')
+        
+        # Group data by date, hour, room, and sensor
+        grouped = df.groupby(group_cols)['temp_c'].mean().reset_index()
+        
+        # Create a structure that groups data by room:sensor and then by date
+        result = {
+            'legacy': {},  # for backward compatibility
+            'grouped': {}  # new format with room/sensor grouping
+        }
+        
+        # Generate legacy format first (for backward compatibility)
         for date in df['date'].unique():
+            date_str = str(date)
             day_data = df[df['date'] == date]
             hourly_avg = day_data.groupby('hour')['temp_c'].mean()
-            hourly_data[str(date)] = hourly_avg.to_dict()
+            result['legacy'][date_str] = hourly_avg.to_dict()
         
-        return hourly_data
+        # Generate new grouped format
+        for _, row in grouped.iterrows():
+            date = str(row['date'])
+            hour = int(row['hour'])
+            temp = float(round(row['temp_c'], 2))
+            
+            # Create key based on available columns
+            if has_room and has_sensor:
+                key = f"{row['room']}:{row['sensor']}"
+            elif has_room:
+                key = f"{row['room']}:unknown"
+            else:
+                key = f"unknown:{row['sensor']}"
+            
+            # Initialize if this room:sensor combo doesn't exist yet
+            if key not in result['grouped']:
+                result['grouped'][key] = {}
+            
+            # Initialize if this date doesn't exist for this room:sensor yet
+            if date not in result['grouped'][key]:
+                result['grouped'][key][date] = {}
+            
+            # Add hourly data for this room:sensor and date
+            result['grouped'][key][date][hour] = temp
+        
+        # For backward compatibility, if it's a simple query with one room/sensor,
+        # return the legacy format directly
+        if len(result['grouped']) == 1:
+            return result['legacy']
+        
+        return result
     
-    def get_trend_comparison(self, hours=1):
+    def get_trend_comparison(self, hours=1, room_filter=None, sensor_filter=None):
         """Get temperature trends comparing current period vs previous day same period"""
-        df = self.get_data(hours_back=48)  # Get 48 hours of data
+        df = self.get_data(hours_back=48, room_filter=room_filter, sensor_filter=sensor_filter)  # Get 48 hours of data
         if df.empty:
             return {}
         
@@ -120,33 +193,106 @@ class TemperatureDashboard:
         current_data['minutes'] = (current_data['timestamp'] - current_start).dt.total_seconds() / 60
         prev_data['minutes'] = (prev_data['timestamp'] - prev_start).dt.total_seconds() / 60
         
-        # Resample to 5-minute intervals for smoother comparison
-        def resample_data(data, label):
+        # Function to resample data with room/sensor grouping
+        def resample_data_grouped(data, label):
             if data.empty:
                 return {}
             
-            # Group by 5-minute intervals
-            data['interval'] = (data['minutes'] // 5).astype(int)
-            resampled = data.groupby('interval')['temp_c'].mean()
-            
-            return {
-                'minutes': (resampled.index * 5).tolist(),
-                'temperatures': resampled.round(2).tolist(),
+            result = {
+                'minutes': [],
+                'temperatures': [],
+                'rooms': [],
+                'sensors': [],
                 'label': label,
-                'avg': round(data['temp_c'].mean(), 2),
-                'min': round(data['temp_c'].min(), 2),
-                'max': round(data['temp_c'].max(), 2)
+                'groups': {}
             }
+            
+            # Ensure we have room and sensor columns
+            has_room = 'room' in data.columns
+            has_sensor = 'sensor' in data.columns
+            
+            if not has_room and not has_sensor:
+                # Legacy case - no grouping possible
+                data['interval'] = (data['minutes'] // 5).astype(int)
+                resampled = data.groupby('interval')['temp_c'].mean()
+                
+                return {
+                    'minutes': (resampled.index * 5).tolist(),
+                    'temperatures': resampled.round(2).tolist(),
+                    'label': label,
+                    'avg': round(data['temp_c'].mean(), 2),
+                    'min': round(data['temp_c'].min(), 2),
+                    'max': round(data['temp_c'].max(), 2)
+                }
+            
+            # Group by room and sensor if available
+            group_cols = []
+            if has_room:
+                group_cols.append('room')
+            if has_sensor:
+                group_cols.append('sensor')
+                
+            # Add 5-minute interval for resampling
+            data['interval'] = (data['minutes'] // 5).astype(int)
+            group_cols.append('interval')
+            
+            # Group by room, sensor, and interval
+            grouped = data.groupby(group_cols).agg({
+                'temp_c': 'mean',
+                'minutes': 'mean'  # Average minute within interval
+            }).reset_index()
+            
+            # Process each room/sensor combination
+            for name, group in grouped.groupby(group_cols[:-1] if len(group_cols) > 1 else group_cols):
+                # Create a key for this room/sensor combo
+                if len(group_cols) > 2:  # both room and sensor
+                    room, sensor = name
+                    key = f"{room}:{sensor}"
+                elif has_room:  # just room
+                    room = name
+                    sensor = "unknown"
+                    key = f"{room}:unknown"
+                else:  # just sensor
+                    room = "unknown"
+                    sensor = name
+                    key = f"unknown:{sensor}"
+                
+                # Sort by interval for proper line rendering
+                sorted_group = group.sort_values('interval')
+                
+                # Store grouped data
+                result['groups'][key] = {
+                    'minutes': sorted_group['minutes'].round(2).tolist(),
+                    'temperatures': sorted_group['temp_c'].round(2).tolist(),
+                    'room': room,
+                    'sensor': sensor,
+                    'avg': round(sorted_group['temp_c'].mean(), 2),
+                    'min': round(sorted_group['temp_c'].min(), 2),
+                    'max': round(sorted_group['temp_c'].max(), 2)
+                }
+                
+                # Also add to flat lists for backward compatibility
+                result['minutes'].extend(sorted_group['minutes'].round(2).tolist())
+                result['temperatures'].extend(sorted_group['temp_c'].round(2).tolist())
+                result['rooms'].extend([room] * len(sorted_group))
+                result['sensors'].extend([sensor] * len(sorted_group))
+            
+            # Add overall statistics for backward compatibility
+            result['avg'] = round(data['temp_c'].mean(), 2)
+            result['min'] = round(data['temp_c'].min(), 2)
+            result['max'] = round(data['temp_c'].max(), 2)
+            
+            return result
         
         return {
-            'current': resample_data(current_data, f'Last {hours}h'),
-            'previous': resample_data(prev_data, f'Previous day same {hours}h'),
+            'current': resample_data_grouped(current_data, f'Last {hours}h'),
+            'previous': resample_data_grouped(prev_data, f'Previous day same {hours}h'),
             'comparison_hours': hours
         }
     
-    def get_daily_summary(self, days_back=30):
+    def get_daily_summary(self, days_back=30, room_filter=None, sensor_filter=None):
         """Get daily temperature summary"""
-        df = self.get_data(hours_back=days_back * 24)
+        df = self.get_data(hours_back=days_back * 24, room_filter=room_filter, sensor_filter=sensor_filter)
         if df.empty:
             return {}
         
@@ -195,10 +341,11 @@ def index():
 def api_realtime():
     """Get real-time temperature data"""
     hours = request.args.get('hours', 1, type=int)
-    room = request.args.get('room', None)
+    room = request.args.getlist('room[]') or None
+    sensors = request.args.getlist('sensors[]') or None
     unit = request.args.get('unit', 'c')  # 'c' for Celsius, 'f' for Fahrenheit
     
-    df = dashboard.get_data(hours_back=hours, room_filter=room)
+    df = dashboard.get_data(hours_back=hours, room_filter=room, sensor_filter=sensors)
     
     if df.empty:
         return jsonify({'timestamps': [], 'temperatures': [], 'rooms': []})
@@ -211,6 +358,7 @@ def api_realtime():
         'timestamps': df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
         'temperatures': temperatures.tolist(),
         'rooms': df['room'].tolist() if 'room' in df.columns else ['unknown'] * len(df),
+        'sensors': df['sensor'].tolist() if 'sensor' in df.columns else ['unknown'] * len(df),
         'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'unit': unit
     })
@@ -219,9 +367,11 @@ def api_realtime():
 def api_trend_comparison():
     """Get trend comparison data"""
     hours = request.args.get('hours', 1, type=int)
+    room = request.args.getlist('room[]') or None
+    sensors = request.args.getlist('sensors[]') or None
     unit = request.args.get('unit', 'c')
     
-    data = dashboard.get_trend_comparison(hours=hours)
+    data = dashboard.get_trend_comparison(hours=hours, room_filter=room, sensor_filter=sensors)
     
     # Convert to Fahrenheit if requested
     if unit == 'f' and data:
@@ -239,8 +389,10 @@ def api_hourly_comparison():
     """Get hourly temperature comparison across days"""
     days = request.args.get('days', 7, type=int)
     unit = request.args.get('unit', 'c')
+    room = request.args.getlist('room[]') or None
+    sensors = request.args.getlist('sensors[]') or None
     
-    data = dashboard.get_hourly_comparison(days_back=days)
+    data = dashboard.get_hourly_comparison(days_back=days, room_filter=room, sensor_filter=sensors)
     
     # Convert to Fahrenheit if requested
     if unit == 'f':
@@ -256,8 +408,10 @@ def api_daily_summary():
     """Get daily temperature summary"""
     days = request.args.get('days', 30, type=int)
     unit = request.args.get('unit', 'c')
+    room = request.args.getlist('room[]') or None
+    sensors = request.args.getlist('sensors[]') or None
     
-    data = dashboard.get_daily_summary(days_back=days)
+    data = dashboard.get_daily_summary(days_back=days, room_filter=room, sensor_filter=sensors)
     
     # Convert to Fahrenheit if requested
     if unit == 'f':
@@ -272,12 +426,14 @@ def api_daily_summary():
 def api_insights():
     """Get intelligent insights from temperature data"""
     unit = request.args.get('unit', 'c')
+    room = request.args.getlist('room[]') or None
+    sensors = request.args.getlist('sensors[]') or None
     
     # Get different time periods for analysis
-    current_1h = dashboard.get_data(hours_back=1)
-    current_24h = dashboard.get_data(hours_back=24)
-    previous_24h = dashboard.get_data(hours_back=48)
-    week_data = dashboard.get_data(hours_back=168)  # 7 days
+    current_1h = dashboard.get_data(hours_back=1, room_filter=room, sensor_filter=sensors)
+    current_24h = dashboard.get_data(hours_back=24, room_filter=room, sensor_filter=sensors)
+    previous_24h = dashboard.get_data(hours_back=48, room_filter=room, sensor_filter=sensors)
+    week_data = dashboard.get_data(hours_back=168, room_filter=room, sensor_filter=sensors)  # 7 days
     
     def convert_temp(temp):
         if unit == 'f':
@@ -401,7 +557,9 @@ def api_insights():
 def api_stats():
     """Get current statistics"""
     unit = request.args.get('unit', 'c')
-    df = dashboard.get_data(hours_back=24)
+    room = request.args.getlist('room[]') or None
+    sensors = request.args.getlist('sensors[]') or None
+    df = dashboard.get_data(hours_back=24, room_filter=room, sensor_filter=sensors)
     
     if df.empty:
         return jsonify({'error': 'No data available'})
@@ -421,10 +579,31 @@ def api_stats():
         'max_24h': convert_temp(df['temp_c'].max()),
         'avg_24h': convert_temp(df['temp_c'].mean()),
         'rooms': df['room'].unique().tolist() if 'room' in df.columns else ['unknown'],
+        'sensors': df['sensor'].unique().tolist() if 'sensor' in df.columns else ['unknown'],
         'unit': unit
     }
     
     return jsonify(stats)
+
+@app.route('/api/filters')
+def api_filters():
+    """Get available filters (rooms and sensors)"""
+    df = dashboard.data_cache
+    
+    if df is None or df.empty:
+        return jsonify({
+            'rooms': [],
+            'sensors': []
+        })
+    
+    # Get unique rooms and sensors
+    rooms = df['room'].unique().tolist() if 'room' in df.columns else []
+    sensors = df['sensor'].unique().tolist() if 'sensor' in df.columns else []
+    
+    return jsonify({
+        'rooms': rooms,
+        'sensors': sensors
+    })
 
 if __name__ == '__main__':
     print("Starting Temperature Dashboard...")

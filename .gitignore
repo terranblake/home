@@ -1,1 +1,3 @@
 **/*.csv
+.pio/
+.DS_Store
